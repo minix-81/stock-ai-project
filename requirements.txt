@@ -4,4 +4,5 @@ numpy
 finance-datareader
 scikit-learn
 plotly
-st-gsheets-connection
+st-supabase-connection
+supabase
