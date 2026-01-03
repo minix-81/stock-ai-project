@@ -11,27 +11,30 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_percentage_error
 import plotly.graph_objects as go
 
-# 1. 환경 설정
-st.set_page_config(page_title="주식 AI v52.9 (Fluid Intelligence Fix)", layout="wide")
-KST_NOW = datetime.utcnow() + timedelta(hours=9)
+# 1. 환경 설정 (2026-01-04 실시간 대응)
+st.set_page_config(page_title="주식 AI v53.0 (Live Sync)", layout="wide")
+KST_NOW = datetime.now() + timedelta(hours=9) # 한국 시간 강제 설정
 TODAY_STR = KST_NOW.strftime('%Y-%m-%d')
-DB_PATH = "stock_knowledge_v52.csv"
-NEWS_DB_PATH = "news_rss_cache_v52.csv"
-CONFIG_PATH = "global_config_v52.csv"
+DB_PATH = "stock_knowledge_v53.csv"
+NEWS_DB_PATH = "news_rss_cache_v53.csv"
+CONFIG_PATH = "global_config_v53.csv"
 
-# --- [1. 지능 로직 및 사전 정의] ---
+# --- [1. 최신 뉴스 실시간 수집 엔진] ---
 POS_WORDS = ['상승','호재','수주','흑자','성공','최고','돌파','급등','강세','추천','목표가 상향','우상향','반등','M&A','신고가','어닝 서프라이즈','기관 매수','외인 매수','순매수','저평가','배당 확대','자사주 매입'] 
 NEG_WORDS = ['하락','악재','적자','위기','실패','최저','우려','약세','매도','급락','손실','쇼크','검찰','압수수색','기소','배임','횡령','사법 리스크','고소','피소','수사']
 
 def get_google_rss_score(stock_name, target_date):
     date_str = target_date.strftime('%Y-%m-%d')
     next_date_str = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
-    if os.path.exists(NEWS_DB_PATH) and date_str != TODAY_STR:
+    
+    # [핵심] 오늘 데이터는 캐시를 확인하지 않고 무조건 실시간 수집
+    if date_str != TODAY_STR and os.path.exists(NEWS_DB_PATH):
         try:
             cache = pd.read_csv(NEWS_DB_PATH)
             match = cache[(cache['date'] == date_str) & (cache['name'] == stock_name)]
             if not match.empty: return float(match.iloc[0]['score']), 1
         except: pass
+
     url = f"https://news.google.com/rss/search?q={stock_name}+주가+after:{date_str}+before:{next_date_str}&hl=ko&gl=KR&ceid=KR:ko"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -47,10 +50,14 @@ def get_google_rss_score(stock_name, target_date):
             for n in NEG_WORDS:
                 if n in title: score_val -= 30 
         final_score = (score_val / count)
-        pd.DataFrame([[date_str, stock_name, final_score]], columns=['date', 'name', 'score']).to_csv(NEWS_DB_PATH, mode='a', header=not os.path.exists(NEWS_DB_PATH), index=False)
+        
+        # 오늘이 아닌 데이터만 캐시에 저장
+        if date_str != TODAY_STR:
+            pd.DataFrame([[date_str, stock_name, final_score]], columns=['date', 'name', 'score']).to_csv(NEWS_DB_PATH, mode='a', header=not os.path.exists(NEWS_DB_PATH), index=False)
         return final_score, count
     except: return 0, -1
 
+# --- [2. 지능 관리 및 학습량 측정] ---
 def get_progressive_intelligence():
     if os.path.exists(CONFIG_PATH):
         try:
@@ -65,8 +72,9 @@ def get_learning_volume():
         except: pass
     return 0
 
-# --- [2. 메인 분석 엔진] ---
-st.title(f"🏛️ 주식 AI v52.9 (유동 지능 및 인과관계 모델)")
+# --- [3. 메인 분석 엔진] ---
+st.title(f"🏛️ 주식 AI v53.0 (실시간 데이터 통합 모델)")
+st.info(f"📅 현재 시각: {KST_NOW.strftime('%Y-%m-%d %H:%M')} | 최신 뉴스와 주가를 반영합니다.")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
@@ -80,18 +88,22 @@ c1, c2 = st.columns(2)
 with c1: s_code = st.text_input("종목 코드", value="005930")
 with c2: s_name = st.text_input("종목 이름", value="삼성전자")
 
-if st.button("최신 데이터 통합 분석 시작", use_container_width=True):
+if st.button("최신 데이터 실시간 분석 시작", use_container_width=True):
     success_flag = False
     try:
-        with st.status("AI 학습 및 인과관계 분석 중...", expanded=True) as status:
+        with st.status("최신 주가 및 뉴스 인과관계 분석 중...", expanded=True) as status:
+            # 1. 2년치 데이터 수집 (오늘 날짜까지 강제 지정)
             start_date = KST_NOW - timedelta(days=730)
             df_raw = fdr.DataReader(s_code, start_date, TODAY_STR).rename(columns={'Close':'종가','Volume':'거래량'})
             
+            # 2. 실시간 뉴스 전수 조사 (최근 60일 + 오늘 주말 뉴스)
             analysis_days = df_raw.index[-60:].tolist()
-            if KST_NOW.date() not in [d.date() for d in analysis_days]:
-                analysis_days.append(pd.Timestamp(KST_NOW.date()))
+            if pd.Timestamp(TODAY_STR) not in analysis_days:
+                analysis_days.append(pd.Timestamp(TODAY_STR))
+            
             daily_scores = {d: get_google_rss_score(s_name, d)[0] for d in analysis_days}
             
+            # 3. 7대 지표 생성
             vix = fdr.DataReader('^VIX', start_date, TODAY_STR)[['Close']].rename(columns={'Close': 'VIX'})
             df = df_raw.join(vix).ffill().fillna(20)
             delta = df['종가'].diff()
@@ -112,36 +124,26 @@ if st.button("최신 데이터 통합 분석 시작", use_container_width=True):
             X_scaled = scaler.fit_transform(df_final[features])
             y = df_final['target']
             
-            # [수정] 지능 수렴 로직 강화 (고착 방지 패널티 도입)
+            # 4. 유동적 지능 학습 (0.25 하한선 유지)
             knowledge_df = pd.read_csv(DB_PATH) if os.path.exists(DB_PATH) else pd.DataFrame()
-            acc_coef = get_progressive_intelligence()
-            
             if not knowledge_df.empty and all(col in knowledge_df.columns for col in features):
-                # 현재 분석 중인 종목 데이터는 과거 지식에서 제외 (중복 방지)
+                # 종목 중복 방지
                 k_df_filtered = knowledge_df[knowledge_df['stock_code'] != str(s_code)]
-                
                 if not k_df_filtered.empty:
                     X_total = scaler.fit_transform(pd.concat([df_final[features], k_df_filtered[features]]))
                     y_total = pd.concat([y, k_df_filtered['target']])
-                    min_err, best_c = float('inf'), acc_coef
-                    
-                    for c in np.linspace(0.25, 0.85, 30):
+                    min_err, best_c = float('inf'), get_progressive_intelligence()
+                    for c in np.linspace(0.25, 0.85, 20):
                         w = np.concatenate([np.ones(len(df_final)), np.full(len(k_df_filtered), c)])
                         m_temp = Ridge(alpha=0.5).fit(X_total, y_total, sample_weight=w)
-                        # [핵심] 오차에 c만큼의 미세 패널티를 더해, 0.85 고착을 수학적으로 방지
                         err = mean_absolute_percentage_error(y, m_temp.predict(X_scaled)) + (c * 0.001)
-                        if err < min_err:
-                            min_err = err; best_c = c
-                    
+                        if err < min_err: min_err = err; best_c = c
                     pd.DataFrame([[datetime.now(), best_c]], columns=['date', 'best_m_coef']).to_csv(CONFIG_PATH, mode='a', header=not os.path.exists(CONFIG_PATH), index=False)
-                    weights = np.concatenate([np.ones(len(df_final)), np.full(len(k_df_filtered), get_progressive_intelligence())])
-                    model = Ridge(alpha=0.5).fit(X_total, y_total, sample_weight=weights)
-                else:
-                    model = Ridge(alpha=0.5).fit(X_scaled, y)
-            else:
-                model = Ridge(alpha=0.5).fit(X_scaled, y)
+                    model = Ridge(alpha=0.5).fit(X_total, y_total, sample_weight=np.concatenate([np.ones(len(df_final)), np.full(len(k_df_filtered), get_progressive_intelligence())]))
+                else: model = Ridge(alpha=0.5).fit(X_scaled, y)
+            else: model = Ridge(alpha=0.5).fit(X_scaled, y)
 
-            # 7일 예측
+            # 5. 예측 결과 도출
             df_final['AI_복기'] = (df_final['종가'] * (1 + model.predict(X_scaled))).shift(1).fillna(df_final['종가'])
             f_prices, tmp_p = [], df_final['종가'].iloc[-1]
             last_f = df_final[features].iloc[-1:].copy()
@@ -150,43 +152,41 @@ if st.button("최신 데이터 통합 분석 시작", use_container_width=True):
                 last_f['날짜지수'] += 1; last_f['요일'] = (df_final.index[-1].weekday() + i) % 7
                 last_f['뉴스감성'] = current_sentiment 
                 pred = model.predict(scaler.transform(last_f))[0]
-                if (current_sentiment / 530) <= -2.0 and pred > 0: pred *= 0.3
+                if (current_sentiment / 530) <= -2.0 and pred > 0: pred *= 0.3 # 심리 보정
                 tmp_p *= (1 + pred); f_prices.append(tmp_p)
 
             st.session_state.importance = pd.DataFrame({'지표': features, '가중치': (np.abs(model.coef_) / np.sum(np.abs(model.coef_)) * 100).round(1)})
             st.session_state.result = {
                 'df': df_final.tail(21), 'f_prices': f_prices,
                 'mape': mean_absolute_percentage_error(df_final['종가'], df_final['AI_복기']),
-                'news_score': current_sentiment / 530, 'AI_복기_V': df_final['AI_복기']
+                'news_score': current_sentiment / 530, 'AI_복기_V': df_final['AI_복기'],
+                'last_date': df_final.index[-1].strftime('%Y-%m-%d')
             }
-            
-            # [수정] 데이터 중복 저장 방지 로직
-            df_to_save = df_final[features + ['target']].tail(30).copy()
-            df_to_save['stock_code'] = str(s_code)
-            df_to_save['date'] = df_final.index[-30:].strftime('%Y-%m-%d')
-            
-            if os.path.exists(DB_PATH):
-                existing_db = pd.read_csv(DB_PATH)
-                # 동일 종목, 동일 날짜 데이터는 제외하고 병합
-                new_data = df_to_save[~df_to_save['date'].isin(existing_db['date']) | (df_to_save['stock_code'] != existing_db['stock_code'])]
-                new_data.to_csv(DB_PATH, mode='a', header=False, index=False)
-            else:
-                df_to_save.to_csv(DB_PATH, mode='w', header=True, index=False)
-                
+            # 지식 누적
+            df_final['stock_code'] = s_code
+            df_final[features + ['target', 'stock_code']].tail(30).to_csv(DB_PATH, mode='a', header=not os.path.exists(DB_PATH), index=False)
             success_flag = True
-            status.update(label="분석 완료!", state="complete")
+            status.update(label="최신 데이터 분석 완료!", state="complete")
     except Exception as e: st.error(f"오류: {e}")
     if success_flag: st.rerun()
 
-# --- [3. 분석 리포트] ---
+# --- [4. 분석 리포트] ---
 if 'result' in st.session_state:
     res = st.session_state.result
     st.subheader(f"📊 분석 결과 리포트 (백테스팅 오차율: {res['mape']:.2%})")
+    st.write(f"🏷️ 마지막 분석 시세 기준일: **{res['last_date']}**")
+    
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['종가'], name="최근 시세", line=dict(color='#00CCFF', width=2)))
+    fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['종가'], name="최신 시세", line=dict(color='#00CCFF', width=2)))
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['AI_복기_V'].loc[res['df'].index], name="AI 복기", line=dict(color='yellow', dash='dot'), opacity=0.5))
     f_dates = [res['df'].index[-1] + timedelta(days=i) for i in range(1, 8)]
     fig.add_trace(go.Scatter(x=[res['df'].index[-1]] + f_dates, y=[res['df']['종가'].iloc[-1]] + res['f_prices'], 
                              name="미래 7일 예측", line=dict(color='#FF3366', width=4), mode='lines+markers'))
-    st.markdown(f"### 📢 투자 심리 진단: {'🟢 호재' if res['news_score'] >= 1.0 else ('🔴 악재' if res['news_score'] <= -1.0 else '⚖️ 중립')} ({res['news_score']:.2f})")
+    
+    sentiment_label = '⚖️ 중립'
+    if res['news_score'] >= 1.0: sentiment_label = '🟢 호재 발생'
+    elif res['news_score'] <= -1.0: sentiment_label = '🔴 악재 감지'
+    
+    st.markdown(f"### 📢 투자 심리 진단(최근 3일): {sentiment_label} ({res['news_score']:.2f})")
+    fig.update_layout(template='plotly_dark', height=600)
     st.plotly_chart(fig, use_container_width=True)
