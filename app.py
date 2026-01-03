@@ -7,89 +7,136 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 from pytrends.request import TrendReq
-import gspread # 사용자님 requirements.txt에 있는 것을 직접 사용합니다
+from streamlit_gsheets import GSheetsConnection
 
 # 1. 페이지 설정
-st.set_page_config(page_title="K-Investment AI Pro", layout="wide")
+st.set_page_config(page_title="K-Investment AI Pro", layout="wide", page_icon="📈")
 
-# 2. 사이드바 (분석과 독립적으로 작동)
+# 2. 구글 시트 연결 (관리자 대시보드용)
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except:
+    conn = None
+
+# 3. 사이드바 메뉴 (관리자 페이지가 여기서 전환됩니다)
 with st.sidebar:
     st.title("🚀 AI 데이터 센터")
     menu = st.radio("이동할 페이지", ["실전 종목 분석기", "관리자 대시보드"])
     st.write("---")
-    st.info(f"접속 시간: {datetime.now().strftime('%H:%M:%S')}")
+    st.info(f"현재 시각: {datetime.now().strftime('%H:%M:%S')}")
 
-# --- [안전한 로그 기록 함수] ---
-def safe_record_log(code, name):
-    try:
-        # JSON 없이 공개 링크 방식으로 기록 시도
-        # (이 부분이 실패해도 분석은 멈추지 않습니다)
-        pass 
-    except: pass
+# --- [기능: 로그 기록 함수] ---
+def record_log(code, name):
+    if conn:
+        try:
+            # image_3ea728.png 구조에 맞게 기록
+            existing_data = conn.read(worksheet="Sheet1", ttl=0)
+            new_entry = pd.DataFrame([{"날짜": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
+                                     "종목코드": code, "종목명": name}])
+            updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
+            conn.update(worksheet="Sheet1", data=updated_df)
+        except: pass
 
 # --- [페이지 1: 실전 종목 분석기] ---
 if menu == "실전 종목 분석기":
-    st.title("📈 실전 투자용 AI 패턴 분석기")
-    stock_code = st.text_input("종목 번호 6자리:", value="005930")
-    run_button = st.button("AI 분석 시작", use_container_width=True)
+    st.title("📈 7거래일 AI 패턴 분석기")
+    st.write("사용자님의 Ridge 회귀 모델이 5가지 핵심 변수를 학습하여 미래를 예측합니다.")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        stock_code = st.text_input("종목 번호 6자리:", value="005930")
+    with col2:
+        st.write("") 
+        run_button = st.button("AI 분석 시작", use_container_width=True)
 
     if run_button:
-        # 단계별 진행 상황을 사용자에게 보여주며 범인을 찾습니다.
-        progress = st.status("분석을 시작합니다...")
-
-        # [단계 1] 종목명 확보 (실패 시 종목코드를 이름으로 사용)
         try:
-            progress.write("종목 정보를 확인 중...")
-            stocks = fdr.StockListing('KRX')
-            stock_name = stocks[stocks['Code'] == stock_code]['Name'].values[0]
-        except:
-            stock_name = stock_code # KRX 접속 차단 시 코드번호 그대로 사용
-            st.warning("거래소 연결이 불안정하여 코드 번호로 분석을 진행합니다.")
+            # [1] 데이터 수집 및 로그
+            stocks_krx = fdr.StockListing('KRX')
+            stock_name = stocks_krx[stocks_krx['Code'] == stock_code]['Name'].values[0]
+            record_log(stock_code, stock_name)
+            
+            df = fdr.DataReader(stock_code, datetime.now()-timedelta(days=730), datetime.now())
+            df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
 
-        # [단계 2] 주가 데이터 수집 (가장 중요한 부분)
-        df = pd.DataFrame()
-        try:
-            progress.write("주가 데이터를 불러오는 중...")
-            df = fdr.DataReader(stock_code, datetime.now()-timedelta(days=730))
-        except:
-            st.error("주가 데이터를 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.")
-            st.stop()
-
-        if not df.empty:
-            # [단계 3] 구글 트렌드 (완벽 격리)
+            # [2] 구글 트렌드 (오류 방어)
             df['구글트렌드'] = 0
             try:
-                progress.write("시장 심리 지표 분석 중...")
-                pytrends = TrendReq(hl='ko', timeout=(5, 10))
+                pytrends = TrendReq(hl='ko', tz=360)
                 pytrends.build_payload([stock_name], timeframe='today 2-y', geo='KR')
-                trends = pytrends.interest_over_time()
-                if not trends.empty:
-                    df['구글트렌드'] = trends[stock_name].reindex(df.index, method='ffill').fillna(0)
+                trends_df = pytrends.interest_over_time()
+                if not trends_df.empty:
+                    df['구글트렌드'] = trends_df[stock_name].reindex(df.index, method='ffill').fillna(0)
             except:
-                progress.write("⚠️ 트렌드 데이터 제외 (서버 차단)")
+                st.warning("구글 트렌드 데이터를 일시적으로 불러올 수 없습니다.")
 
-            # [단계 4] AI 학습 및 예측 (사용자님의 핵심 로직)
+            # [3] AI 변수 생성 (사용자님의 핵심 로직)
+            df['날짜지수'] = np.arange(len(df))
+            df['요일'] = df.index.weekday
+            df['변동성'] = (df['High'] - df['Low']) / df['종가']
+            df['감성지수'] = (df['종가'].pct_change() * 1000).clip(-150, 150).fillna(0)
+            df['target'] = df['종가'].pct_change().shift(-1)
+            
+            df_train = df.dropna().copy()
+            features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', '구글트렌드']
+            
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(df_train[features])
+            model = Ridge(alpha=1.0).fit(X_scaled, df_train['target'])
+
+            # [4] ★ 핵심: 7거래일 예측 루프 (복구 완료) ★
+            last_price = df['종가'].iloc[-1]
+            last_date = df.index[-1]
+            future_prices, future_dates = [], []
+            temp_price = last_price
+            last_feat = df[features].iloc[-1:].copy()
+
+            curr_d = last_date
+            while len(future_prices) < 7:
+                curr_d += timedelta(days=1)
+                if curr_d.weekday() < 5: # 주말 제외 영업일 기준
+                    last_feat['날짜지수'] += 1
+                    last_feat['요일'] = curr_d.weekday()
+                    # 예측 수행
+                    pred_ret = model.predict(scaler.transform(last_feat))[0]
+                    temp_price *= (1 + pred_ret)
+                    future_prices.append(temp_price)
+                    future_dates.append(curr_d)
+
+            # [5] 시각화
+            fig = go.Figure()
+            # 실제 데이터 (최근 30일)
+            fig.add_trace(go.Scatter(x=df.index[-30:], y=df['종가'].iloc[-30:], name="최근 시세", line=dict(color='#00CCFF')))
+            # 예측 데이터 (7일)
+            fig.add_trace(go.Scatter(x=[last_date]+future_dates, y=[last_price]+future_prices, 
+                                     name="AI 예측(7일)", line=dict(dash='dash', color='red')))
+            fig.update_layout(template='plotly_dark', height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            st.success(f"{stock_name} 7거래일 예측 완료!")
+
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+
+# --- [페이지 2: 관리자 대시보드] ---
+elif menu == "관리자 대시보드":
+    st.title("📊 실시간 관리자 모니터링")
+    pw = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    
+    # 비밀번호 확인 로직 (Secrets에 설정한 비밀번호 사용)
+    if pw == st.secrets.get("admin_password", "0000"):
+        st.success("인증 성공")
+        if conn:
             try:
-                progress.write("AI 모델 학습 중...")
-                df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
-                df['날짜지수'] = np.arange(len(df))
-                df['요일'] = df.index.weekday
-                df['변동성'] = (df['High'] - df['Low']) / df['종가']
-                df['target'] = df['종가'].pct_change().shift(-1)
-                
-                df_train = df.dropna()
-                features = ['날짜지수', '요일', '거래량', '변동성', '구글트렌드']
-                X = StandardScaler().fit_transform(df_train[features])
-                model = Ridge(alpha=1.0).fit(X, df_train['target'])
-
-                # 미래 7일 예측 로직
-                last_price = df['종가'].iloc[-1]
-                # (중략: 사용자님의 기존 예측 연산 로직)
-                
-                # 결과 출력
-                st.subheader(f"📊 {stock_name} AI 분석 결과")
-                st.line_chart(df['종가'].iloc[-60:])
-                st.success("분석이 완료되었습니다!")
-                progress.update(label="분석 완료", state="complete")
+                # 구글 시트에서 데이터 읽기
+                data = conn.read(worksheet="Sheet1", ttl=0)
+                st.subheader("🔥 실시간인기 종목 TOP 5")
+                st.bar_chart(data['종목명'].value_counts().head(5))
+                st.write("---")
+                st.subheader("📝 상세 검색 로그")
+                st.dataframe(data.iloc[::-1], use_container_width=True)
             except Exception as e:
-                st.error(f"AI 연산 과정에서 오류 발생: {e}")
+                st.warning(f"데이터 로드 중: {e}")
+        else:
+            st.error("구글 시트 연결 설정(Secrets)이 필요합니다.")
+    else:
+        st.info("관리자 비밀번호를 입력해 주세요.")
