@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_percentage_error
 import plotly.graph_objects as go
 
 # 1. 환경 설정
-st.set_page_config(page_title="주식 AI v52.5 (Sentiment Sync)", layout="wide")
+st.set_page_config(page_title="주식 AI v52.6 (Dynamic Balance)", layout="wide")
 KST_NOW = datetime.now() + timedelta(hours=9)
 DB_PATH = "stock_knowledge_v52.csv"
 NEWS_DB_PATH = "news_rss_cache_v52.csv"
@@ -65,7 +65,7 @@ def get_learning_volume():
     return 0
 
 # --- [2. 메인 분석 엔진] ---
-st.title("🏛️ 주식 AI v52.5 (심리-방향성 동조화 모델)")
+st.title("🏛️ 주식 AI v52.6 (다이나믹 밸런스 모델)")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
@@ -90,7 +90,7 @@ if st.button("분석 시작", use_container_width=True):
             analysis_days = df_raw.index[-60:] 
             daily_scores = {d: get_google_rss_score(s_name, d)[0] for d in analysis_days}
             
-            # 7대 지표 생성
+            # 지표 생성
             vix = fdr.DataReader('^VIX', start_date)[['Close']].rename(columns={'Close': 'VIX'})
             df = df_raw.join(vix).ffill().fillna(20)
             delta = df['종가'].diff()
@@ -99,10 +99,10 @@ if st.button("분석 시작", use_container_width=True):
             df['날짜지수'] = np.arange(len(df)); df['요일'] = df.index.weekday
             df['변동성'] = (df['High'] - df['Low']) / (df['종가'] + 1e-9)
             
-            # [방향성 강화] 뉴스 심리 반영비 최적화 (530배 베이스)
+            # [해결1] 뉴스 반영비 하향 (530 -> 320)하여 그래프 곡선미 복원
             temp_scores = pd.Series(0.0, index=df.index)
             for d, s in daily_scores.items(): temp_scores[d] = s
-            df['뉴스감성'] = temp_scores.rolling(window=3, min_periods=1).mean() * 530 
+            df['뉴스감성'] = temp_scores.rolling(window=3, min_periods=1).mean() * 320 
             
             df_final = df.dropna()
             features = ['날짜지수', '요일', '거래량', '변동성', '뉴스감성', 'VIX', 'RSI']
@@ -111,21 +111,21 @@ if st.button("분석 시작", use_container_width=True):
             y = df_final['target']
             knowledge_df = pd.read_csv(DB_PATH) if os.path.exists(DB_PATH) else pd.DataFrame()
             
-            # 지능 수렴 및 방향성 일치 학습
+            # [해결2] 유지 계수 탐색 범위 확장 (0.25 ~ 0.85) 및 Ridge 규제 최적화
             acc_coef = get_progressive_intelligence()
             if not knowledge_df.empty and all(col in knowledge_df.columns for col in features):
                 X_total = scaler.fit_transform(pd.concat([df_final[features], knowledge_df[features]]))
                 y_total = pd.concat([y, knowledge_df['target']])
                 min_err, best_c = float('inf'), acc_coef
-                for c in np.linspace(0.25, 0.6, 15):
+                for c in np.linspace(0.25, 0.85, 20): # 더 넓고 정밀한 탐색
                     w = np.concatenate([np.ones(len(df_final)), np.full(len(knowledge_df), c)])
-                    m_temp = Ridge(alpha=0.1).fit(X_total, y_total, sample_weight=w) # alpha 낮춰 민감도 상향
+                    m_temp = Ridge(alpha=0.5).fit(X_total, y_total, sample_weight=w) # alpha를 높여 직선화 방지
                     if mean_absolute_percentage_error(y, m_temp.predict(X_scaled)) < min_err:
                         best_c = c
                 pd.DataFrame([[datetime.now(), best_c]], columns=['date', 'best_m_coef']).to_csv(CONFIG_PATH, mode='a', header=not os.path.exists(CONFIG_PATH), index=False)
-                model = Ridge(alpha=0.1).fit(X_total, y_total, sample_weight=np.concatenate([np.ones(len(df_final)), np.full(len(knowledge_df), get_progressive_intelligence())]))
+                model = Ridge(alpha=0.5).fit(X_total, y_total, sample_weight=np.concatenate([np.ones(len(df_final)), np.full(len(knowledge_df), get_progressive_intelligence())]))
             else:
-                model = Ridge(alpha=0.1).fit(X_scaled, y)
+                model = Ridge(alpha=0.5).fit(X_scaled, y)
 
             # 결과 저장
             df_final['AI_복기'] = (df_final['종가'] * (1 + model.predict(X_scaled))).shift(1).fillna(df_final['종가'])
@@ -135,17 +135,17 @@ if st.button("분석 시작", use_container_width=True):
             
             for i in range(1, 8):
                 last_f['날짜지수'] += 1; last_f['요일'] = (df_final.index[-1].weekday() + i) % 7
-                last_f['뉴스감성'] = current_sentiment # 심리 방향성 고정
+                last_f['뉴스감성'] = current_sentiment 
                 pred = model.predict(scaler.transform(last_f))[0]
-                # [강제 보정] 심리가 강한 악재(-2.0 이하)인데 기술지표가 상승을 예측하면 보수적으로 조정
-                if (current_sentiment / 530) <= -2.0 and pred > 0: pred *= 0.3
+                # 심리 보정 로직 유지
+                if (current_sentiment / 320) <= -2.0 and pred > 0: pred *= 0.3
                 tmp_p *= (1 + pred); f_prices.append(tmp_p)
 
             st.session_state.importance = pd.DataFrame({'지표': features, '가중치': (np.abs(model.coef_) / np.sum(np.abs(model.coef_)) * 100).round(1)})
             st.session_state.result = {
                 'df': df_final.tail(21), 'f_prices': f_prices,
                 'mape': mean_absolute_percentage_error(df_final['종가'], df_final['AI_복기']),
-                'news_score': current_sentiment / 530, 'AI_복기_V': df_final['AI_복기']
+                'news_score': current_sentiment / 320, 'AI_복기_V': df_final['AI_복기']
             }
             df_final['stock_code'] = s_code
             df_final[features + ['target', 'stock_code']].tail(30).to_csv(DB_PATH, mode='a', header=not os.path.exists(DB_PATH), index=False)
@@ -165,10 +165,6 @@ if 'result' in st.session_state:
     fig.add_trace(go.Scatter(x=[res['df'].index[-1]] + f_dates, y=[res['df']['종가'].iloc[-1]] + res['f_prices'], 
                              name="미래 7일 예측", line=dict(color='#FF3366', width=4), mode='lines+markers'))
     
-    sentiment_label = '⚖️ 중립'
-    if res['news_score'] >= 1.0: sentiment_label = '🟢 호재 발생'
-    elif res['news_score'] <= -1.0: sentiment_label = '🔴 악재 감지'
-    
-    st.markdown(f"### 📢 투자 심리 진단(최근 3일): {sentiment_label} ({res['news_score']:.2f})")
+    st.markdown(f"### 📢 투자 심리 진단: {'🟢 호재' if res['news_score'] >= 1.0 else ('🔴 악재' if res['news_score'] <= -1.0 else '⚖️ 중립')} ({res['news_score']:.2f})")
     fig.update_layout(template='plotly_dark', height=600)
     st.plotly_chart(fig, use_container_width=True)
