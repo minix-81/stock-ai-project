@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_percentage_error
 import plotly.graph_objects as go
 
 # 1. 환경 설정
-st.set_page_config(page_title="주식 AI v52.2 (2Y Focus)", layout="wide")
+st.set_page_config(page_title="주식 AI v52.3 (Fluid Intelligence)", layout="wide")
 KST_NOW = datetime.now() + timedelta(hours=9)
 DB_PATH = "stock_knowledge_v52.csv"
 NEWS_DB_PATH = "news_rss_cache_v52.csv"
@@ -52,12 +52,13 @@ def get_google_rss_score(stock_name, target_date):
     except: return 0, -1
 
 def get_progressive_intelligence():
+    """과거에 축적된 지능의 평균치를 반환하되, 하한선을 0.25로 보장"""
     if os.path.exists(CONFIG_PATH):
         try:
             df = pd.read_csv(CONFIG_PATH)
-            if not df.empty: return max(0.15, df['best_m_coef'].mean())
+            if not df.empty: return max(0.25, df['best_m_coef'].mean())
         except: pass
-    return 0.15
+    return 0.25
 
 def get_learning_volume():
     if os.path.exists(DB_PATH):
@@ -68,13 +69,14 @@ def get_learning_volume():
     return 0
 
 # --- [2. 메인 분석 엔진] ---
-st.title("🏛️ 주식 AI v52.2 (3주 집중 시각화 및 통합 지능 모델)")
+st.title("🏛️ 주식 AI v52.3 (유동적 지능 및 3주 집중 모델)")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
     if 'importance' in st.session_state:
         st.write("### AI 지표 판단 비중 (%)")
         st.bar_chart(st.session_state.importance.set_index('지표'), color='#00CCFF')
+    # 유동적으로 변화하는 축적 지능 표시
     st.metric("데이터 유지 지능 (축적치)", f"{get_progressive_intelligence():.4f}")
     st.metric("누적 학습 데이터량", f"{get_learning_volume():,} pt")
 
@@ -82,16 +84,18 @@ c1, c2 = st.columns(2)
 with c1: s_code = st.text_input("종목 코드", value="005930")
 with c2: s_name = st.text_input("종목 이름", value="삼성전자")
 
-if st.button("2년 통합 분석 및 3주 집중 시각화 시작", use_container_width=True):
+if st.button("2년 통합 분석 및 지능 축적 시작", use_container_width=True):
     success_flag = False
     try:
-        with st.status("2년치 인과관계를 학습하여 3주 데이터에 투영 중...", expanded=True) as status:
+        with st.status("유지 지능의 하한선을 0.25로 설정하여 유동적 학습 중...", expanded=True) as status:
             start_date = KST_NOW - timedelta(days=730)
             df_raw = fdr.DataReader(s_code, start_date).rename(columns={'Close':'종가','Volume':'거래량'})
             
+            # 최근 뉴스 조사 (60일)
             analysis_days = df_raw.index[-60:] 
             daily_scores = {d: get_google_rss_score(s_name, d)[0] for d in analysis_days}
             
+            # 모든 7대 지표 생성
             vix = fdr.DataReader('^VIX', start_date)[['Close']].rename(columns={'Close': 'VIX'})
             df = df_raw.join(vix).ffill().fillna(20)
             delta = df['종가'].diff()
@@ -100,7 +104,7 @@ if st.button("2년 통합 분석 및 3주 집중 시각화 시작", use_containe
             df['날짜지수'] = np.arange(len(df)); df['요일'] = df.index.weekday
             df['변동성'] = (df['High'] - df['Low']) / (df['종가'] + 1e-9)
             
-            # [수정] 뉴스 심리 530배 반영 및 3일 누적
+            # 뉴스 심리 530배 반영 및 3일 누적 인과관계
             temp_scores = pd.Series(0.0, index=df.index)
             for d, s in daily_scores.items(): temp_scores[d] = s
             df['뉴스감성'] = temp_scores.rolling(window=3, min_periods=1).mean() * 530 
@@ -113,20 +117,27 @@ if st.button("2년 통합 분석 및 3주 집중 시각화 시작", use_containe
             y = df_final['target']
             knowledge_df = pd.read_csv(DB_PATH) if os.path.exists(DB_PATH) else pd.DataFrame()
             
+            # [유동적 지능 탐색] 하한선 0.25 적용
+            accumulated_coef = get_progressive_intelligence()
             if not knowledge_df.empty and all(col in knowledge_df.columns for col in features):
                 X_total = scaler.fit_transform(pd.concat([df_final[features], knowledge_df[features]]))
                 y_total = pd.concat([y, knowledge_df['target']])
-                min_err, best_c = float('inf'), get_progressive_intelligence()
-                for c in np.linspace(0.15, 0.5, 10):
+                
+                min_err, best_c = float('inf'), accumulated_coef
+                # 0.25부터 0.6까지 유동적으로 탐색
+                for c in np.linspace(0.25, 0.6, 15):
                     w = np.concatenate([np.ones(len(df_final)), np.full(len(knowledge_df), c)])
                     m_temp = Ridge(alpha=0.2).fit(X_total, y_total, sample_weight=w)
                     if mean_absolute_percentage_error(y, m_temp.predict(X_scaled)) < min_err:
                         best_c = c
+                
+                # 새로운 최적 지능을 저장하여 축적
                 pd.DataFrame([[datetime.now(), best_c]], columns=['date', 'best_m_coef']).to_csv(CONFIG_PATH, mode='a', header=not os.path.exists(CONFIG_PATH), index=False)
                 model = Ridge(alpha=0.2).fit(X_total, y_total, sample_weight=np.concatenate([np.ones(len(df_final)), np.full(len(knowledge_df), get_progressive_intelligence())]))
             else:
                 model = Ridge(alpha=0.2).fit(X_scaled, y)
 
+            # 결과 도출 및 미래 7일 예측
             df_final['AI_복기'] = (df_final['종가'] * (1 + model.predict(X_scaled))).shift(1).fillna(df_final['종가'])
             f_prices, tmp_p = [], df_final['종가'].iloc[-1]
             last_f = df_final[features].iloc[-1:].copy()
@@ -140,22 +151,23 @@ if st.button("2년 통합 분석 및 3주 집중 시각화 시작", use_containe
             abs_coef = np.abs(model.coef_)
             st.session_state.importance = pd.DataFrame({'지표': features, '가중치': (abs_coef / np.sum(abs_coef) * 100).round(1)})
             st.session_state.result = {
-                'df': df_final.tail(21), # [수정] 가시적 그래프는 최근 3주(21거래일)
+                'df': df_final.tail(21), # 가시적 그래프는 최근 3주
                 'f_prices': f_prices,
                 'mape': mean_absolute_percentage_error(df_final['종가'], df_final['AI_복기']),
                 'news_score': current_sentiment / 530, 'AI_복기_V': df_final['AI_복기']
             }
+            # 학습량 누적을 위한 데이터 저장
             df_final['stock_code'] = s_code
             df_final[features + ['target', 'stock_code']].tail(30).to_csv(DB_PATH, mode='a', header=not os.path.exists(DB_PATH), index=False)
             success_flag = True
-            status.update(label="3주 집중 분석 및 미래 예측 완료!", state="complete")
+            status.update(label="0.25 하한선 기반 유동 지능 수렴 완료!", state="complete")
     except Exception as e: st.error(f"오류: {e}")
     if success_flag: st.rerun()
 
 # --- [3. 시각화 영역] ---
 if 'result' in st.session_state:
     res = st.session_state.result
-    st.subheader(f"📊 분석 리포트 (최근 3주 집중 대시보드)")
+    st.subheader(f"📊 분석 리포트 (최근 3주 집중 및 유동 지능 모델)")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['종가'], name="실제 시세", line=dict(color='#00CCFF', width=2)))
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['AI_복기_V'].loc[res['df'].index], name="AI 백테스팅", line=dict(color='yellow', dash='dot'), opacity=0.5))
