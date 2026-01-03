@@ -19,8 +19,8 @@ NEWS_DB_PATH = "news_rss_cache_v52.csv"
 CONFIG_PATH = "global_config_v52.csv"
 
 # --- [1. 감성 사전 및 지능 로직] ---
-POS_WORDS = ['상승','호재','수주','흑자','성공','최고','돌파','급등','강세','추천','목표가 상향','우상향','반등','M&A','신고가','어닝 서프라이즈','기관 매수','외인 매수','순매수','저평가','배당 확대','자사주 매입'] 
-NEG_WORDS = ['하락','악재','적자','위기','실패','최저','우려','약세','매도','급락','손실','쇼크','검찰','압수수색','기소','배임','횡령','사법 리스크','고소','피소','수사']
+POS_WORDS = ['상승','호재','수주','흑자','성공','최고','돌파','급등','강세','추천','목표가 상향','우상향','반등','M&A','신고가','어닝 서프라이즈','기관 매수','외인 매수','순매수','저평가','배당 확대','자사주 매입','긍정'] 
+NEG_WORDS = ['하락','악재','적자','위기','실패','최저','우려','약세','매도','급락','손실','쇼크','검찰','압수수색','기소','배임','횡령','사법 리스크','고소','피소','수사','고소','부정']
 
 def get_google_rss_score(stock_name, target_date):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -69,7 +69,7 @@ def get_learning_volume():
     return 0
 
 # --- [2. 메인 분석 엔진] ---
-st.title("🏛️ 주식 AI v52.3 (유동적 지능 및 3주 집중 모델)")
+st.title("🏛️ 주식 AI v52.3")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
@@ -87,7 +87,7 @@ with c2: s_name = st.text_input("종목 이름", value="삼성전자")
 if st.button("2년 통합 분석 및 지능 축적 시작", use_container_width=True):
     success_flag = False
     try:
-        with st.status("유지 지능의 하한선을 0.25로 설정하여 유동적 학습 중...", expanded=True) as status:
+        with st.status("AI 분석중...", expanded=True) as status:
             start_date = KST_NOW - timedelta(days=730)
             df_raw = fdr.DataReader(s_code, start_date).rename(columns={'Close':'종가','Volume':'거래량'})
             
@@ -160,14 +160,14 @@ if st.button("2년 통합 분석 및 지능 축적 시작", use_container_width=
             df_final['stock_code'] = s_code
             df_final[features + ['target', 'stock_code']].tail(30).to_csv(DB_PATH, mode='a', header=not os.path.exists(DB_PATH), index=False)
             success_flag = True
-            status.update(label="0.25 하한선 기반 유동 지능 수렴 완료!", state="complete")
+            status.update(label="AI분석 complete!", state="complete")
     except Exception as e: st.error(f"오류: {e}")
     if success_flag: st.rerun()
 
 # --- [3. 시각화 영역] ---
 if 'result' in st.session_state:
     res = st.session_state.result
-    st.subheader(f"📊 분석 리포트 (최근 3주 집중 및 유동 지능 모델)")
+    st.subheader(f"📊 분석 리포트")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['종가'], name="실제 시세", line=dict(color='#00CCFF', width=2)))
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['AI_복기_V'].loc[res['df'].index], name="AI 백테스팅", line=dict(color='yellow', dash='dot'), opacity=0.5))
@@ -177,3 +177,4 @@ if 'result' in st.session_state:
     st.markdown(f"### 📢 투자 심리 진단: {'🟢 호재' if res['news_score'] >= 1.0 else ('🔴 악재' if res['news_score'] <= -1.0 else '⚖️ 중립')} ({res['news_score']:.2f})")
     fig.update_layout(template='plotly_dark', height=600)
     st.plotly_chart(fig, use_container_width=True)
+
