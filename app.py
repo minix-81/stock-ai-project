@@ -8,25 +8,34 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_percentage_error
 import plotly.graph_objects as go
 
-# 1. 페이지 설정
-st.set_page_config(page_title="주식 AI v10.0 (Backtest Master)", layout="wide")
+# 1. 페이지 설정 (가장 먼저 와야 함)
+st.set_page_config(page_title="주식 AI v10.1", layout="wide")
+
+# 한국 시간 설정
 KST_NOW = datetime.now() + timedelta(hours=9)
 
-# --- [데이터 전처리 함수] ---
-def prepare_data(df, start_date):
-    # VIX 지표 결합
+# --- [데이터 처리 함수] ---
+@st.cache_data(ttl=3600)  # 1시간 동안 결과 캐싱 (성능 향상)
+def get_stock_data(stock_code, days=730):
+    start_date = KST_NOW - timedelta(days=days)
+    df = fdr.DataReader(stock_code, start_date)
+    if df.empty:
+        return None
+    df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
+    
+    # VIX (공포지수) 추가
     try:
         vix = fdr.DataReader('^VIX', start_date)[['Close']].rename(columns={'Close': 'VIX'})
         df = df.join(vix).ffill().fillna(20)
     except:
         df['VIX'] = 20
-    
-    # RSI 지표 계산
+
+    # RSI 지표
     delta = df['종가'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     df['RSI'] = (100 - (100 / (1 + (gain / loss)))).fillna(50)
-    
+
     # 특징량 생성
     df['target'] = df['종가'].pct_change().shift(-1)
     df['날짜지수'] = np.arange(len(df))
@@ -36,99 +45,76 @@ def prepare_data(df, start_date):
     
     return df.dropna()
 
-# --- [메인 로직] ---
-st.title("📊 2개년 전수 검증 및 최근 3개월 집중 분석")
+# --- [메인 화면 구성] ---
+st.title("📈 주식 AI: 2년 전수 검증 및 7일 예측")
+st.markdown("수파베이스 연결을 제거하고 백테스팅 기능을 강화한 단독 실행 버전입니다.")
 
-with st.sidebar:
-    st.header("설정")
-    stock_code = st.text_input("종목 코드 (6자리)", value="005930")
-    analyze_btn = st.button("전수 조사 및 예측 시작", use_container_width=True)
+# 🔍 검색창을 메인 화면 상단으로 배치
+col_input, col_info = st.columns([1, 2])
+with col_input:
+    stock_code = st.text_input("종목 코드 6자리를 입력하세요:", value="005930", help="예: 삼성전자(005930), SK하이닉스(000660)")
+    analyze_btn = st.button("🚀 AI 분석 시작", use_container_width=True)
 
 if analyze_btn:
-    try:
-        # [단계 1] 2년치 데이터 확보
-        start_date = KST_NOW - timedelta(days=730)
-        df_raw = fdr.DataReader(stock_code, start_date)
-        df_raw = df_raw.rename(columns={'Close': '종가', 'Volume': '거래량'})
-        
-        df = prepare_data(df_raw, start_date)
-        features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', 'VIX', 'RSI']
-        
-        # [단계 2] 전 기간 학습 및 백테스팅 (Fitted Values)
-        scaler = StandardScaler()
-        X_all = scaler.fit_transform(df[features])
-        y_all = df['target']
-        
-        model = Ridge(alpha=1.0)
-        model.fit(X_all, y_all)
-        
-        # 전체 기간에 대한 AI의 '복기' (1일 후 예측 수익률 기반 종가 재구성)
-        df['pred_target'] = model.predict(X_all)
-        # 실제 수익률 대신 모델이 예측한 수익률을 적용했을 때의 궤적 계산
-        df['AI_복기종가'] = df['종가'] * (1 + df['pred_target'].shift(1))
-        df['AI_복기종가'] = df['AI_복기종가'].fillna(df['종가'])
+    with st.spinner('AI가 지난 2년의 데이터를 전수 조사 중입니다...'):
+        try:
+            # 1. 데이터 로드
+            df = get_stock_data(stock_code)
+            if df is None:
+                st.error("종목 데이터를 가져올 수 없습니다. 코드를 확인해 주세요.")
+            else:
+                features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', 'VIX', 'RSI']
+                
+                # 2. 모델 학습 (전수 백테스팅)
+                scaler = StandardScaler()
+                X_all = scaler.fit_transform(df[features])
+                y_all = df['target']
+                
+                model = Ridge(alpha=1.0)
+                model.fit(X_all, y_all)
+                
+                # AI 복기 데이터 생성
+                df['pred_target'] = model.predict(X_all)
+                df['AI_복기종가'] = df['종가'] * (1 + df['pred_target'].shift(1))
+                df['AI_복기종가'] = df['AI_복기종가'].fillna(df['종가'])
+                total_mape = mean_absolute_percentage_error(df['종가'], df['AI_복기종가'])
 
-        # 전체 기간 오차율 계산
-        total_mape = mean_absolute_percentage_error(df['종가'], df['AI_복기종가'])
+                # 3. 미래 7일 예측
+                last_p, last_d = df['종가'].iloc[-1], df.index[-1]
+                f_prices, f_dates = [], []
+                temp_p, last_f = last_p, df[features].iloc[-1:].copy()
+                
+                for i in range(1, 8):
+                    last_f['날짜지수'] += 1
+                    last_f['요일'] = (last_d + timedelta(days=i)).weekday()
+                    pred = model.predict(scaler.transform(last_f))[0]
+                    temp_p *= (1 + pred)
+                    f_prices.append(temp_p)
+                    f_dates.append(last_d + timedelta(days=i))
 
-        # [단계 3] 향후 7일 미래 예측
-        last_p, last_d = df['종가'].iloc[-1], df.index[-1]
-        f_prices, f_dates = [], []
-        temp_p, last_f = last_p, df[features].iloc[-1:].copy()
-        
-        for i in range(1, 8):
-            last_f['날짜지수'] += 1
-            last_f['요일'] = (last_d + timedelta(days=i)).weekday()
-            pred = model.predict(scaler.transform(last_f))[0]
-            temp_p *= (1 + pred)
-            f_prices.append(temp_p)
-            f_dates.append(last_d + timedelta(days=i))
+                # 4. 시각화 (최근 3개월 집중)
+                view_df = df.tail(66)
+                
+                st.subheader(f"📊 분석 결과 (전 기간 오차율: {total_mape:.2%})")
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=view_df.index, y=view_df['종가'], name="실제 시세", line=dict(color='#00CCFF', width=2)))
+                fig.add_trace(go.Scatter(x=view_df.index, y=view_df['AI_복기종가'], name="AI 과거 복기", line=dict(color='rgba(255, 255, 0, 0.4)', dash='dot')))
+                fig.add_trace(go.Scatter(x=[last_d]+f_dates, y=[last_p]+f_prices, name="미래 7일 예측", line=dict(color='#FF3366', width=4), mode='lines+markers'))
+                
+                fig.update_layout(template='plotly_dark', height=500, margin=dict(l=20, r=20, t=50, b=20))
+                st.plotly_chart(fig, use_container_width=True)
 
-        # [단계 4] 그래프용 데이터 필터링 (최근 3개월 = 약 66거래일)
-        view_df = df.tail(66)
-        
-        # [단계 5] 시각화
-        st.subheader(f"🔍 모델 성적표: 2년 전수 검증 오차율 {total_mape:.2%}")
-        
-        fig = go.Figure()
-        
-        # 1. 실제 가격 (최근 3개월)
-        fig.add_trace(go.Scatter(
-            x=view_df.index, y=view_df['종가'],
-            name="실제 시세", line=dict(color='#00CCFF', width=2)
-        ))
-        
-        # 2. AI의 백테스팅 복기 (최근 3개월)
-        fig.add_trace(go.Scatter(
-            x=view_df.index, y=view_df['AI_복기종가'],
-            name="AI 전수 백테스팅", line=dict(color='rgba(255, 255, 0, 0.5)', dash='dot')
-        ))
-        
-        # 3. 미래 7일 예측
-        fig.add_trace(go.Scatter(
-            x=[last_d]+f_dates, y=[last_p]+f_prices,
-            name="미래 7일 예측", line=dict(color='#FF3366', width=4),
-            mode='lines+markers'
-        ))
-        
-        fig.update_layout(
-            template='plotly_dark',
-            title=f"{stock_code} 최근 3개월 흐름 및 미래 예측",
-            hovermode='x unified',
-            height=600
-        )
-        st.plotly_chart(fig, use_container_width=True)
+                # 5. 하단 상세 정보
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write("### 💡 지표 영향력")
+                    imp = pd.DataFrame({'지표': features, '가중치': model.coef_}).set_index('지표')
+                    st.bar_chart(imp, color='#00CCFF')
+                with c2:
+                    st.write("### 📈 7일 예측가")
+                    pred_df = pd.DataFrame({'날짜': [d.strftime('%m-%d') for d in f_dates], '예측가': f_prices})
+                    st.table(pred_df.style.format({'예측가': '{:,.0f}원'}))
 
-        # 지표 가중치
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("### 💡 지표별 가중치")
-            importance = pd.DataFrame({'지표': features, '영향력': model.coef_})
-            st.bar_chart(importance.set_index('지표'), color='#00CCFF')
-        with col2:
-            st.write("### 📈 예측 상세 (Next 7 Days)")
-            pred_res = pd.DataFrame({'날짜': f_dates, '예측가': f_prices})
-            st.dataframe(pred_res.style.format({'예측가': '{:,.0f}원'}))
-
-    except Exception as e:
-        st.error(f"분석 중 오류 발생: {e}")
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {e}")
