@@ -5,4 +5,5 @@ finance-datareader
 scikit-learn
 plotly
 pytrends
-streamlit-gsheets
+gspread
+google-auth
