@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+FinanceDataReader
+scikit-learn
+plotly
+pytrends
