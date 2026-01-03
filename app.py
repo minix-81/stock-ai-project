@@ -9,22 +9,23 @@ import plotly.graph_objects as go
 from streamlit_gsheets import GSheetsConnection
 
 # 1. 페이지 및 한국 시간(KST) 설정
-st.set_page_config(page_title="K-Investment AI Pro v4.2", layout="wide", page_icon="📈")
+st.set_page_config(page_title="K-Investment AI Pro v4.3", layout="wide", page_icon="📈")
 KST_NOW = datetime.now() + timedelta(hours=9)
 current_time_str = KST_NOW.strftime('%Y-%m-%d %H:%M:%S')
 
-# 2. 구글 시트 연결 (관리자 대시보드용)
+# 2. 구글 시트 연결 (연결 실패 대비 예외 처리 강화)
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception:
+except Exception as e:
     conn = None
+    st.error(f"시트 연결 엔진 오류: {e}")
 
 # 3. 사이드바 내비게이션
 with st.sidebar:
     st.title("🚀 AI 데이터 센터")
     menu = st.radio("이동할 페이지", ["실전 종목 분석기", "관리자 대시보드"])
     st.write("---")
-    st.info(f"현재 시간(KST): {current_time_str}")
+    st.info(f"접속 시간(KST): {current_time_str}")
 
 # --- [정밀 분석용 보조 함수] ---
 
@@ -46,7 +47,7 @@ if menu == "실전 종목 분석기":
 
     if run_button:
         try:
-            # [단계 1] 데이터 수집
+            # [데이터 수집 및 전처리]
             start_date = KST_NOW - timedelta(days=730)
             df = fdr.DataReader(stock_code, start_date)
             if df.empty:
@@ -55,14 +56,13 @@ if menu == "실전 종목 분석기":
             
             df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
             
-            # VIX 결합 (0 출력 오류 해결)
             vix_df = get_vix_data(start_date)
             if not vix_df.empty:
                 df = df.join(vix_df, how='left').fillna(method='ffill').fillna(20)
             else:
                 df['VIX'] = 20
 
-            # RSI 및 기술 지표 생성
+            # 기술적 지표 생성
             delta = df['종가'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -74,23 +74,24 @@ if menu == "실전 종목 분석기":
             df['target'] = df['종가'].pct_change().shift(-1)
             
             df_train = df.dropna().copy()
-            features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', 'VIX', 'RSI']
+            # VIX에 대한 설명 추가 (변수명 변경)
+            df_train = df_train.rename(columns={'VIX': 'VIX(시장공포지수)'})
+            features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', 'VIX(시장공포지수)', 'RSI']
             
-            # [단계 2] Ridge AI 학습
-            # $$J(\theta) = \sum_{i=1}^n (y_i - \hat{y}_i)^2 + \alpha \sum_{j=1}^m \theta_j^2$$
+            # [Ridge AI 학습]
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(df_train[features])
             model = Ridge(alpha=1.0).fit(X_scaled, df_train['target'])
 
-            # 변수 기여도 막대그래프
+            # 변수 기례도 막대그래프 (VIX 설명 포함)
             st.subheader("💡 AI 변수별 예측 기여도 분석")
             importance = pd.DataFrame({'변수': features, '비중(%)': (np.abs(model.coef_) / np.sum(np.abs(model.coef_))) * 100})
             st.bar_chart(importance.set_index('변수'), color='#00CCFF')
 
-            # [단계 3] 7거래일 영업일 예측 루프
+            # [7거래일 예측]
             last_price, last_date = df['종가'].iloc[-1], df.index[-1]
             future_prices, future_dates = [], []
-            temp_price, last_feat = last_price, df[features].iloc[-1:].copy()
+            temp_price, last_feat = last_price, df_train[features].iloc[-1:].copy()
 
             curr_d = last_date
             while len(future_prices) < 7:
@@ -102,15 +103,15 @@ if menu == "실전 종목 분석기":
                     temp_price *= (1 + pred)
                     future_prices.append(temp_price); future_dates.append(curr_d)
 
-            # [단계 4] 시각화
+            # [시각화]
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=df.index[-30:], y=df['종가'].iloc[-30:], name="실제 시세", line=dict(color='#00CCFF', width=3)))
             fig.add_trace(go.Scatter(x=[last_date]+future_dates, y=[last_price]+future_prices, 
-                                     name="AI 예측(7일)", line=dict(dash='dash', color='red', width=4), mode='lines+markers'))
-            fig.update_layout(template='plotly_dark', height=500)
+                                     name="AI 예측(7거래일)", line=dict(dash='dash', color='red', width=4), mode='lines+markers'))
+            fig.update_layout(template='plotly_dark', height=500, legend_title="구분")
             st.plotly_chart(fig, use_container_width=True)
             
-            # 로그 기록 (HTTPError 방어)
+            # 로그 기록 시도 (오류 발생 시에도 앱 유지)
             if conn:
                 try:
                     data = conn.read(worksheet="Sheet1", ttl=0)
@@ -126,11 +127,18 @@ elif menu == "관리자 대시보드":
     st.title("📊 실시간 관리자 모니터링")
     pw = st.text_input("비밀번호", type="password")
     if pw == st.secrets.get("admin_password", "0000"):
+        st.success("인증 성공")
         if conn:
             try:
-                # image_408b67.jpg의 HTTPError를 여기서 잡아냅니다.
+                # HTTPError 방지를 위한 캐시 무시 로직
                 data = conn.read(worksheet="Sheet1", ttl=0)
                 st.dataframe(data.iloc[::-1], use_container_width=True)
             except Exception as e:
-                st.error("⚠️ 구글 시트 접근 권한이 없습니다.")
-                st.info("시트 우측 상단 [공유] -> [링크가 있는 모든 사용자] -> [편집자]로 설정했는지 확인하세요.")
+                st.error("⚠️ 구글 시트 접근 권한 오류가 발생했습니다.")
+                st.write(f"상세 오류: {e}")
+                st.info("### 🆘 해결 방법")
+                st.markdown("""
+                1. **Secrets 주소 확인**: URL 끝이 반드시 `/edit#gid=0` 형태인지 확인하세요.
+                2. **공유 설정 재확인**: [링크가 있는 모든 사용자]가 [편집자]인지 다시 한 번 저장하세요.
+                3. **직접 접근 테스트**: 브라우저 시크릿 모드에서 해당 시트 주소로 접속했을 때 로그인이 뜨지 않고 바로 열려야 합니다.
+                """)
