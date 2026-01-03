@@ -8,15 +8,15 @@ from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 from streamlit_gsheets import GSheetsConnection
 
-# 1. 페이지 설정 (KST 한국 시간 기준)
-st.set_page_config(page_title="주식 AI 분석기 v4.5", layout="wide", page_icon="📊")
+# 1. 페이지 설정 (최신 규격 반영)
+st.set_page_config(page_title="주식 AI 분석기 v4.6", layout="wide", page_icon="📈")
 KST_NOW = datetime.now() + timedelta(hours=9)
 current_time_str = KST_NOW.strftime('%Y-%m-%d %H:%M:%S')
 
-# 2. 구글 시트 연결 (Secrets에 설정된 JSON 키 활용)
+# 2. 구글 시트 연결
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
+except Exception:
     conn = None
 
 # 3. 사이드바 내비게이션
@@ -24,7 +24,7 @@ with st.sidebar:
     st.title("🚀 데이터 센터")
     menu = st.radio("이동할 페이지", ["실전 종목 분석기", "관리자 대시보드"])
     st.write("---")
-    st.info(f"현재 시간(KST): {current_time_str}")
+    st.info(f"접속 시간(KST): {current_time_str}")
 
 # --- [정밀 분석용 보조 함수] ---
 
@@ -44,11 +44,12 @@ if menu == "실전 종목 분석기":
     st.write("최근 5개년 데이터를 기반으로 **VIX(시장공포지수)**와 **RSI(매수·매도강도)**를 정밀 분석합니다.")
     
     stock_code = st.text_input("종목 번호 6자리 (예: 삼성전자 005930):", value="005930")
-    run_button = st.button("5개년 데이터 정밀 분석 및 7일 예측 시작", use_container_width=True)
+    # 로그 경고 반영: use_container_width -> width='stretch'
+    run_button = st.button("5개년 데이터 정밀 분석 및 7일 예측 시작", width='stretch')
 
     if run_button:
         try:
-            # [단계 1] 5년치 데이터 수집 (timedelta 1825일)
+            # [단계 1] 5년치 데이터 수집
             start_date = KST_NOW - timedelta(days=365 * 5)
             df = fdr.DataReader(stock_code, start_date)
             
@@ -58,10 +59,10 @@ if menu == "실전 종목 분석기":
             
             df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
             
-            # VIX(시장 공포지수) 수집 및 설명 포함
+            # [로그 경고 해결] fillna(method='ffill') -> ffill()
             vix_df = get_vix_data(start_date)
             if not vix_df.empty:
-                df = df.join(vix_df, how='left').fillna(method='ffill').fillna(20)
+                df = df.join(vix_df, how='left').ffill().fillna(20)
             else:
                 df['VIX(시장공포지수)'] = 20
 
@@ -80,7 +81,7 @@ if menu == "실전 종목 분석기":
             df['target'] = df['종가'].pct_change().shift(-1)
             
             # [단계 3] AI 학습 (Ridge Regression)
-            # $J(\theta) = \sum_{i=1}^n (y_i - \hat{y}_i)^2 + \alpha \sum_{j=1}^m \theta_j^2$
+            # $$J(\theta) = \sum_{i=1}^n (y_i - \hat{y}_i)^2 + \alpha \sum_{j=1}^m \theta_j^2$$
             df_train = df.dropna().copy()
             features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', 'VIX(시장공포지수)', 'RSI(매수·매도강도)']
             
@@ -93,7 +94,7 @@ if menu == "실전 종목 분석기":
             importance = pd.DataFrame({'변수': features, '비중(%)': (np.abs(model.coef_) / np.sum(np.abs(model.coef_))) * 100})
             st.bar_chart(importance.set_index('변수'), color='#00CCFF')
 
-            # [단계 5] 7거래일(영업일 기준) 예측 루프
+            # [단계 5] 7거래일 예측 루프
             last_price, last_date = df['종가'].iloc[-1], df.index[-1]
             future_prices, future_dates = [], []
             temp_price, last_feat = last_price, df_train[features].iloc[-1:].copy()
@@ -101,7 +102,7 @@ if menu == "실전 종목 분석기":
             curr_d = last_date
             while len(future_prices) < 7:
                 curr_d += timedelta(days=1)
-                if curr_d.weekday() < 5: # 영업일만 포함
+                if curr_d.weekday() < 5: 
                     last_feat['날짜지수'] += 1
                     last_feat['요일'] = curr_d.weekday()
                     pred = model.predict(scaler.transform(last_feat))[0]
@@ -110,13 +111,12 @@ if menu == "실전 종목 분석기":
 
             # [단계 6] 결과 시각화
             fig = go.Figure()
-            # 최근 60거래일 시세 (5년치라 60일이 보기 편함)
             fig.add_trace(go.Scatter(x=df.index[-60:], y=df['종가'].iloc[-60:], name="실제 시세", line=dict(color='#00CCFF', width=3)))
-            # 미래 7일 예측 (빨간 점선)
             fig.add_trace(go.Scatter(x=[last_date]+future_dates, y=[last_price]+future_prices, 
                                      name="AI 7일 예측", line=dict(dash='dash', color='red', width=4), mode='lines+markers'))
             fig.update_layout(template='plotly_dark', height=500)
-            st.plotly_chart(fig, use_container_width=True)
+            # 로그 경고 반영: use_container_width -> width='stretch'
+            st.plotly_chart(fig, width='stretch')
             
             st.success(f"최근 5개년 데이터를 기반으로 한 7거래일 분석이 완료되었습니다.")
 
@@ -140,6 +140,7 @@ elif menu == "관리자 대시보드":
         if conn:
             try:
                 data = conn.read(worksheet="Sheet1", ttl=0)
-                st.dataframe(data.iloc[::-1], use_container_width=True)
+                # 로그 경고 반영: use_container_width -> width='stretch'
+                st.dataframe(data.iloc[::-1], width='stretch')
             except Exception as e:
-                st.error(f"시트 데이터를 불러올 수 없습니다: {e}")
+                st.error(f"시트 데이터를 불러올 수 없습니다. Google Drive API가 활성화되어 있는지 확인하세요.")
