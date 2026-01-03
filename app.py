@@ -10,7 +10,7 @@ from pytrends.request import TrendReq
 
 # 1. 페이지 설정
 st.set_page_config(page_title="K-Investment AI Pro", layout="wide")
-st.title("실전 투자용 AI 패턴 분석기 (영업일 기준 7일 예측)")
+st.title("실전 투자용 AI 패턴 분석기 (7거래일 영업일 예측)")
 
 # 2. 메인 입력창
 st.write("---")
@@ -19,7 +19,7 @@ with col1:
     stock_code = st.text_input("종목 번호 6자리 (예: 005930):", value="005930")
 with col2:
     st.write("") 
-    run_button = st.button("분석 및 예측 시작", use_container_width=True)
+    run_button = st.button("분석 시작", use_container_width=True)
 st.write("---")
 
 if run_button:
@@ -96,15 +96,15 @@ if run_button:
                 future_prices.append(current_price)
                 future_dates.append(check_date)
 
-        # [7] 그래프 출력 (1개월)
-        st.subheader(f"최근 1개월 흐름 및 향후 예측")
+        # [7] 그래프 출력 (최근 1개월 집중)
+        st.subheader(f"최근 1개월 흐름 및 향후 7거래일 예측")
         fig = go.Figure()
         display_df = df.iloc[-30:] 
         fig.add_trace(go.Scatter(x=display_df.index, y=display_df['종가'], name="실제 시세", line=dict(color='#00CCFF', width=3)))
         fig.add_trace(go.Scatter(x=[last_date] + future_dates, y=[last_real_price] + future_prices, name="AI 예측선", line=dict(color='#FF3300', dash='dash', width=4)))
         fig.update_layout(template='plotly_dark', height=500)
         st.plotly_chart(fig, use_container_width=True)
-        status.success("분석 완료!")
+        status.success("2개년 지식 축적 및 분석 완료!")
 
     except Exception as e:
-        st.error(f"오류 발생: {e}")
+        st.error(f"실행 중 오류 발생: {e}")
