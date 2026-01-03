@@ -4,6 +4,4 @@ numpy
 finance-datareader
 scikit-learn
 plotly
-pytrends
 st-gsheets-connection
-gspread
