@@ -6,96 +6,135 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
-import gspread
-from google.oauth2.service_account import Credentials
+from pytrends.request import TrendReq
+from streamlit_gsheets import GSheetsConnection
 
-# 1. 페이지 설정 및 사이드바 내비게이션
-st.set_page_config(page_title="K-Investment AI Pro", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="K-Investment AI Pro", layout="wide", page_icon="📈")
 
+# 2. 사이드바 내비게이션
 with st.sidebar:
-    st.title("🚀 AI 데이터 센터")
+    st.title("🚀 데이터 센터")
     menu = st.radio("이동할 페이지", ["실전 종목 분석기", "관리자 대시보드"])
     st.write("---")
-    st.info("실시간 검색 패턴 수집 중")
+    st.info("사용자의 검색 패턴을 학습 중입니다.")
 
-# --- [기능: 구글 시트 로그 기록 함수] ---
-def record_to_gsheet(code, name):
-    try:
-        # Streamlit Secrets에서 보안 정보를 가져옵니다.
-        # (이 부분은 아래 'Secrets 설정' 단계에서 완료해야 작동합니다)
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds_dict = st.secrets["gcp_service_account"]
-        credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(credentials)
-        
-        # 구글 시트 열기 (본인의 시트 이름으로 수정 가능)
-        sheet = client.open("Stock_AI_Logs").sheet1
-        
-        # 데이터 추가: [날짜, 종목코드, 종목명]
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        sheet.append_row([now, code, name])
-        st.toast(f"'{name}' 분석 로그가 기록되었습니다.")
-    except Exception:
-        # 시트 연결 전까지는 로그 없이 기능만 작동하도록 예외처리
-        pass
+# 3. 구글 시트 연결 (Secrets 설정 필요)
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except:
+    conn = None
 
-# --- [페이지 1: 종목 분석기] ---
+# --- [기능: 로그 기록 함수] ---
+def record_search(code, name):
+    if conn:
+        try:
+            # 기존 데이터 읽기 (ttl=0으로 실시간성 확보)
+            existing_data = conn.read(worksheet="Sheet1", ttl=0)
+            new_log = pd.DataFrame([{
+                "날짜": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "종목코드": code,
+                "종목명": name
+            }])
+            updated_df = pd.concat([existing_data, new_log], ignore_index=True)
+            conn.update(worksheet="Sheet1", data=updated_df)
+            st.toast(f"'{name}' 분석 로그가 서버에 기록되었습니다.")
+        except:
+            pass
+
+# --- [페이지 1: 실전 종목 분석기] ---
 if menu == "실전 종목 분석기":
     st.title("📈 실전 투자용 AI 패턴 분석기")
-    st.write("---")
+    st.write("최근 2년 데이터를 학습하여 향후 7거래일(영업일 기준)의 흐름을 예측합니다.")
     
+    st.write("---")
     col1, col2 = st.columns([2, 1])
     with col1:
         stock_code = st.text_input("종목 번호 6자리 (예: 005930):", value="005930")
     with col2:
         st.write("") 
-        run_button = st.button("분석 및 로그 기록 시작", use_container_width=True)
+        run_button = st.button("분석 시작", use_container_width=True)
     st.write("---")
 
     if run_button:
         try:
-            # 1. 종목명 확보 및 로그 기록
-            stocks_krx = fdr.StockListing('KRX')
-            stock_name = stocks_krx[stocks_krx['Code'] == stock_code]['Name'].values[0]
-            record_to_gsheet(stock_code, stock_name)
+            status = st.empty()
+            status.info("최근 2년 데이터를 수집하고 분석 중입니다...")
 
-            # 2. 데이터 학습 및 예측 (사용자님의 기존 7거래일 로직)
-            df = fdr.DataReader(stock_code, datetime.now()-timedelta(days=730), datetime.now())
-            df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
-            
-            # [AI 학습 로직 시작]
-            df['날짜지수'] = np.arange(len(df))
-            df['요일'] = df.index.weekday
-            df['변동성'] = (df['High'] - df['Low']) / df['종가']
-            df['감성지수'] = (df['종가'].pct_change() * 1000).clip(-150, 150).fillna(0)
-            df['target_return'] = df['종가'].pct_change().shift(-1)
-            df_train = df.dropna().copy()
+            # [1] 주가 데이터 수집
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=365 * 2) 
+            df = fdr.DataReader(stock_code, start_date, end_date)
 
-            features = ['날짜지수', '요일', '거래량', '변동성', '감성지수']
-            X_scaled = StandardScaler().fit_transform(df_train[features])
-            model = Ridge(alpha=1.0).fit(X_scaled, df_train['target_return'])
+            if df.empty:
+                st.error("데이터 수집 실패! 종목 코드를 확인하세요.")
+            else:
+                df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
+                
+                # 종목명 가져오기 및 로그 기록
+                stocks_krx = fdr.StockListing('KRX')
+                stock_name = stocks_krx[stocks_krx['Code'] == stock_code]['Name'].values[0]
+                record_search(stock_code, stock_name)
 
-            # [미래 7거래일 예측]
-            last_price = df['종가'].iloc[-1]
-            future_prices = []
-            current_date = df.index[-1]
-            temp_price = last_price
-            
-            while len(future_prices) < 7:
-                current_date += timedelta(days=1)
-                if current_date.weekday() < 5:
-                    # (간소화된 예측 예시)
-                    future_prices.append(temp_price * 1.01) # 실제 모델 예측값 연결 가능
-                    temp_price *= 1.01
+                # [2] 구글 트렌드 (오류 방어 로직 강화)
+                df['구글트렌드'] = 0
+                try:
+                    pytrends = TrendReq(hl='ko', tz=360)
+                    pytrends.build_payload([stock_name], cat=0, timeframe='today 2-y', geo='KR')
+                    trends_df = pytrends.interest_over_time()
+                    if not trends_df.empty:
+                        trends_df = trends_df[[stock_name]].resample('D').interpolate(method='linear')
+                        df = df.join(trends_df).fillna(method='ffill').fillna(0)
+                        df['구글트렌드'] = df[stock_name]
+                except Exception:
+                    # 'Expecting value' 오류 발생 시 무시하고 진행
+                    st.warning("구글 트렌드 데이터를 일시적으로 불러올 수 없어 기술적 지표 중심으로 분석합니다.")
 
-            # [그래프 시각화]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index[-30:], y=df['종가'].iloc[-30:], name="실제 시세"))
-            fig.add_trace(go.Scatter(x=[df.index[-1]] + [df.index[-1]+timedelta(days=i) for i in range(1,8)], 
-                                     y=[last_price] + future_prices, name="AI 예측(7일)", line=dict(dash='dash')))
-            fig.update_layout(template='plotly_dark')
-            st.plotly_chart(fig, use_container_width=True)
-            st.success(f"{stock_name} 분석 및 데이터 수집 완료!")
+                # [3] 변수 생성 및 AI 학습
+                df['날짜지수'] = np.arange(len(df))
+                df['요일'] = df.index.weekday
+                df['변동성'] = (df['High'] - df['Low']) / df['종가']
+                df['감성지수'] = (df['종가'].pct_change() * 1000).clip(-150, 150).fillna(0)
+                df['target_return'] = df['종가'].pct_change().shift(-1)
+                df_train = df.dropna().copy()
+
+                features = ['날짜지수', '요일', '거래량', '변동성', '감성지수', '구글트렌드']
+                X = df_train[features]
+                y = df_train['target_return']
+                
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X)
+                model = Ridge(alpha=1.0)
+                model.fit(X_scaled, y)
+
+                # [4] 미래 7거래일 예측 (영업일 기준)
+                last_real_price = df['종가'].iloc[-1]
+                last_date = df.index[-1]
+                future_prices, future_dates = [], []
+                current_price = last_real_price
+                last_features = df[features].iloc[-1:].copy()
+
+                check_date = last_date
+                while len(future_prices) < 7:
+                    check_date += timedelta(days=1)
+                    if check_date.weekday() < 5: # 월~금
+                        last_features['날짜지수'] += 1
+                        last_features['요일'] = check_date.weekday()
+                        pred_return = model.predict(scaler.transform(last_features))[0]
+                        current_price *= (1 + pred_return)
+                        future_prices.append(current_price)
+                        future_dates.append(check_date)
+
+                # [5] 결과 시각화
+                st.subheader(f"📊 {stock_name} AI 분석 및 예측 결과")
+                fig = go.Figure()
+                display_df = df.iloc[-30:] # 최근 한 달
+                fig.add_trace(go.Scatter(x=display_df.index, y=display_df['종가'], name="실제 시세", line=dict(color='#00CCFF', width=3)))
+                fig.add_trace(go.Scatter(x=[last_date] + future_dates, y=[last_real_price] + future_prices, name="AI 예측(7거래일)", line=dict(color='#FF3300', dash='dash', width=4)))
+                fig.update_layout(template='plotly_dark', height=500, hovermode='x unified')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                status.success(f"{stock_name} 분석 완료!")
 
         except Exception as e:
             st.error(f"분석 중 오류 발생: {e}")
@@ -104,14 +143,33 @@ if menu == "실전 종목 분석기":
 elif menu == "관리자 대시보드":
     st.title("📊 실시간 관리자 모니터링")
     
-    password = st.text_input("관리자 암호를 입력하세요", type="password")
-    if password == st.secrets.get("admin_password", "1234"): # Secrets에서 관리 권장
-        st.success("인증 성공! 실시간 검색 통계를 불러옵니다.")
+    password = st.text_input("비밀번호를 입력하세요", type="password")
+    
+    if password == st.secrets.get("admin_password", "1234"):
+        st.success("인증 성공! 실시간 데이터를 불러옵니다.")
         
-        # 나중에 구글 시트 데이터를 읽어와 시각화하는 코드가 들어갑니다.
-        st.subheader("🔥 실시간 종목별 검색 점유율")
-        st.write("구글 시트로부터 실시간 로그 데이터를 수집 중입니다.")
-        # 차트 예시
-        st.bar_chart(pd.DataFrame({'검색량': [10, 5, 2]}, index=['삼성전자', '카카오', 'LG엔솔']))
+        if conn:
+            try:
+                logs = conn.read(worksheet="Sheet1", ttl=0)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🔥 실시간 인기 종목 TOP 5")
+                    if not logs.empty:
+                        top_stocks = logs['종목명'].value_counts().head(5)
+                        st.bar_chart(top_stocks, color='#FF4B4B')
+                
+                with col2:
+                    st.subheader("📈 누적 이용 통계")
+                    st.metric("총 분석 횟수", f"{len(logs)}회")
+                    st.metric("오늘의 분석", f"{len(logs[logs['날짜'].str.contains(datetime.now().strftime('%Y-%m-%d'))])}회")
+
+                st.write("---")
+                st.subheader("📝 최근 검색 로그 (최근 20건)")
+                st.dataframe(logs.sort_index(ascending=False).head(20), use_container_width=True)
+            except:
+                st.warning("데이터베이스 연결 대기 중... 시트 설정을 확인하세요.")
+        else:
+            st.error("데이터베이스 연결 설정이 필요합니다.")
     else:
         st.info("관리자만 접근 가능한 페이지입니다.")
