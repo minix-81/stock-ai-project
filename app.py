@@ -65,7 +65,7 @@ def get_fluid_coef():
     return 0.15
 
 # --- [4. 메인 분석 엔진] ---
-st.title("🏛️ 주식 AI v47.0 (뉴스 심리 750배 최적화 모델)")
+st.title("🏛️ 주식 AI v47.0")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
@@ -147,7 +147,7 @@ if st.button("2년 뉴스 전수 학습 및 통합 분석 시작", use_container
                 'news_score': current_sentiment / 750, 'AI_복기_V': df_final['AI_복기']
             }
             success_flag = True
-            status.update(label="뉴스 심리 750배 반영 및 지능 수렴 완료!", state="complete")
+            status.update(label="AI분석 완료 100%", state="complete")
             
     except Exception as e: st.error(f"오류: {e}")
     if success_flag: st.rerun()
@@ -161,8 +161,9 @@ if 'result' in st.session_state:
     
     f_dates = [res['df'].index[-1] + timedelta(days=i) for i in range(1, 8)]
     fig.add_trace(go.Scatter(x=[res['df'].index[-1]] + f_dates, y=[res['df']['종가'].iloc[-1]] + res['f_prices'], 
-                             name="미래 7일 예측 (뉴스심리 750배)", line=dict(color='#FF3366', width=4), mode='lines+markers'))
+                             name="7일 주가 동향 예측", line=dict(color='#FF3366', width=4), mode='lines+markers'))
     
     st.markdown(f"### 📢 투자 심리 진단(최근 3일): {'🟢 호재' if res['news_score'] >= 1.0 else ('🔴 악재' if res['news_score'] <= -1.0 else '⚖️ 중립')} ({res['news_score']:.2f})")
     fig.update_layout(template='plotly_dark', height=600)
     st.plotly_chart(fig, use_container_width=True)
+
