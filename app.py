@@ -43,14 +43,14 @@ def record_log(code, name):
 # --- [페이지 1: 실전 종목 분석기] ---
 if menu == "실전 종목 분석기":
     st.title("📈 7거래일 AI 패턴 분석기")
-    st.write("최근 2년 데이터를 학습하여 주말을 제외한 향향 7거래일을 정밀 예측합니다.")
+    st.write("최근 2년 데이터를 학습하여 일주일뒤 주가를 예측합니다.")
     
     col1, col2 = st.columns([2, 1])
     with col1:
         stock_code = st.text_input("종목 번호 6자리:", value="005930")
     with col2:
         st.write("") 
-        run_button = st.button("영업일 기준 정밀 분석 시작", use_container_width=True)
+        run_button = st.button("AI분석시작작", use_container_width=True)
 
     if run_button:
         try:
@@ -81,7 +81,7 @@ if menu == "실전 종목 분석기":
                 if not trends.empty:
                     df['구글트렌드'] = trends[stock_name].reindex(df.index, method='ffill').fillna(0)
             except:
-                st.warning("시장 심리 지표를 일시적으로 불러올 수 없어 주가 데이터로 분석합니다.")
+                st.warning("구글트렌드를 불러올 수 없어 주가 데이터로 분석합니다.")
 
             # [3] AI 변수 생성 및 Ridge 학습
             df['날짜지수'] = np.arange(len(df))
@@ -155,3 +155,4 @@ elif menu == "관리자 대시보드":
             st.error("구글 시트 연결 라이브러리가 설치되지 않았습니다.")
     else:
         st.info("비밀번호를 입력해 주세요.")
+
