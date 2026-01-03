@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_percentage_error
 import plotly.graph_objects as go
 
 # 1. 환경 설정
-st.set_page_config(page_title="주식 AI v52.1 (2Y Analyze)", layout="wide")
+st.set_page_config(page_title="주식 AI v52.2 (2Y Focus)", layout="wide")
 KST_NOW = datetime.now() + timedelta(hours=9)
 DB_PATH = "stock_knowledge_v52.csv"
 NEWS_DB_PATH = "news_rss_cache_v52.csv"
@@ -68,7 +68,7 @@ def get_learning_volume():
     return 0
 
 # --- [2. 메인 분석 엔진] ---
-st.title("🏛️ 주식 AI v52.1 (2년 통합 학습 및 누적 지능 모델)")
+st.title("🏛️ 주식 AI v52.2 (3주 집중 시각화 및 통합 지능 모델)")
 
 with st.sidebar:
     st.title("🧠 지능 센터")
@@ -82,19 +82,16 @@ c1, c2 = st.columns(2)
 with c1: s_code = st.text_input("종목 코드", value="005930")
 with c2: s_name = st.text_input("종목 이름", value="삼성전자")
 
-if st.button("2년 통합 분석 및 미래 예측 시작", use_container_width=True):
+if st.button("2년 통합 분석 및 3주 집중 시각화 시작", use_container_width=True):
     success_flag = False
     try:
-        with st.status("2년치 데이터를 분석하여 모든 지표의 인과관계를 학습 중...", expanded=True) as status:
-            # 1. 2년(730일) 데이터 수집
+        with st.status("2년치 인과관계를 학습하여 3주 데이터에 투영 중...", expanded=True) as status:
             start_date = KST_NOW - timedelta(days=730)
             df_raw = fdr.DataReader(s_code, start_date).rename(columns={'Close':'종가','Volume':'거래량'})
             
-            # 2. 최근 뉴스 조사
             analysis_days = df_raw.index[-60:] 
             daily_scores = {d: get_google_rss_score(s_name, d)[0] for d in analysis_days}
             
-            # 3. 7대 지표 생성
             vix = fdr.DataReader('^VIX', start_date)[['Close']].rename(columns={'Close': 'VIX'})
             df = df_raw.join(vix).ffill().fillna(20)
             delta = df['종가'].diff()
@@ -103,15 +100,14 @@ if st.button("2년 통합 분석 및 미래 예측 시작", use_container_width=
             df['날짜지수'] = np.arange(len(df)); df['요일'] = df.index.weekday
             df['변동성'] = (df['High'] - df['Low']) / (df['종가'] + 1e-9)
             
-            # 4. 투자 심리 660배 반영 및 3일 누적
+            # [수정] 뉴스 심리 530배 반영 및 3일 누적
             temp_scores = pd.Series(0.0, index=df.index)
             for d, s in daily_scores.items(): temp_scores[d] = s
-            df['뉴스감성'] = temp_scores.rolling(window=3, min_periods=1).mean() * 660 
+            df['뉴스감성'] = temp_scores.rolling(window=3, min_periods=1).mean() * 530 
             
             df_final = df.dropna()
             features = ['날짜지수', '요일', '거래량', '변동성', '뉴스감성', 'VIX', 'RSI']
             
-            # 5. Ridge 회귀 학습 및 지능 축적
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(df_final[features])
             y = df_final['target']
@@ -131,7 +127,6 @@ if st.button("2년 통합 분석 및 미래 예측 시작", use_container_width=
             else:
                 model = Ridge(alpha=0.2).fit(X_scaled, y)
 
-            # 6. 결과 저장
             df_final['AI_복기'] = (df_final['종가'] * (1 + model.predict(X_scaled))).shift(1).fillna(df_final['종가'])
             f_prices, tmp_p = [], df_final['종가'].iloc[-1]
             last_f = df_final[features].iloc[-1:].copy()
@@ -145,22 +140,22 @@ if st.button("2년 통합 분석 및 미래 예측 시작", use_container_width=
             abs_coef = np.abs(model.coef_)
             st.session_state.importance = pd.DataFrame({'지표': features, '가중치': (abs_coef / np.sum(abs_coef) * 100).round(1)})
             st.session_state.result = {
-                'df': df_final.tail(30), # 시각화는 1달(30거래일) 집중
+                'df': df_final.tail(21), # [수정] 가시적 그래프는 최근 3주(21거래일)
                 'f_prices': f_prices,
                 'mape': mean_absolute_percentage_error(df_final['종가'], df_final['AI_복기']),
-                'news_score': current_sentiment / 660, 'AI_복기_V': df_final['AI_복기']
+                'news_score': current_sentiment / 530, 'AI_복기_V': df_final['AI_복기']
             }
             df_final['stock_code'] = s_code
             df_final[features + ['target', 'stock_code']].tail(30).to_csv(DB_PATH, mode='a', header=not os.path.exists(DB_PATH), index=False)
             success_flag = True
-            status.update(label="2년 통합 학습 및 분석 완료!", state="complete")
+            status.update(label="3주 집중 분석 및 미래 예측 완료!", state="complete")
     except Exception as e: st.error(f"오류: {e}")
     if success_flag: st.rerun()
 
 # --- [3. 시각화 영역] ---
 if 'result' in st.session_state:
     res = st.session_state.result
-    st.subheader(f"📊 분석 리포트 (2년 통합 지능 모델)")
+    st.subheader(f"📊 분석 리포트 (최근 3주 집중 대시보드)")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['df']['종가'], name="실제 시세", line=dict(color='#00CCFF', width=2)))
     fig.add_trace(go.Scatter(x=res['df'].index, y=res['AI_복기_V'].loc[res['df'].index], name="AI 백테스팅", line=dict(color='yellow', dash='dot'), opacity=0.5))
