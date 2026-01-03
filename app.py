@@ -9,21 +9,25 @@ import plotly.graph_objects as go
 from pytrends.request import TrendReq
 from streamlit_gsheets import GSheetsConnection
 
-# 1. 페이지 및 구글 시트 연결 설정
+# 1. 페이지 설정 및 한국 시간(KST) 정의
 st.set_page_config(page_title="K-Investment AI Pro", layout="wide", page_icon="📈")
 
-# 구글 시트 연결 시도 (관리자 대시보드용)
+# 서버 시간(UTC)을 한국 시간(KST, UTC+9)으로 변환
+KST = datetime.now() + timedelta(hours=9)
+current_time_str = KST.strftime('%Y-%m-%d %H:%M:%S')
+
+# 2. 구글 시트 연결 (관리자 대시보드용)
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except:
     conn = None
 
-# 2. 사이드바 메뉴 (관리자 페이지 전환 핵심)
+# 3. 사이드바 내비게이션
 with st.sidebar:
     st.title("🚀 AI 데이터 센터")
     menu = st.radio("이동할 페이지", ["실전 종목 분석기", "관리자 대시보드"])
     st.write("---")
-    st.info(f"현재 시각: {datetime.now().strftime('%H:%M:%S')}")
+    st.info(f"접속 시간(KST): {current_time_str}")
 
 # --- [기능: 로그 기록 함수] ---
 def record_log(code, name):
@@ -31,8 +35,7 @@ def record_log(code, name):
         try:
             # image_3ea728.png 시트 구조에 맞게 기록
             existing_data = conn.read(worksheet="Sheet1", ttl=0)
-            new_entry = pd.DataFrame([{"날짜": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 
-                                     "종목코드": code, "종목명": name}])
+            new_entry = pd.DataFrame([{"날짜": current_time_str, "종목코드": code, "종목명": name}])
             updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
             conn.update(worksheet="Sheet1", data=updated_df)
         except: pass
@@ -40,50 +43,47 @@ def record_log(code, name):
 # --- [페이지 1: 실전 종목 분석기] ---
 if menu == "실전 종목 분석기":
     st.title("📈 7거래일 AI 패턴 분석기")
-    st.write("네이버 금융 데이터를 메인으로 Ridge 회귀 모델이 미래 시세를 예측합니다.")
+    st.write("최근 2년 데이터를 학습하여 주말을 제외한 향향 7거래일을 정밀 예측합니다.")
     
     col1, col2 = st.columns([2, 1])
     with col1:
-        stock_code = st.text_input("종목 번호 6자리 (예: 005930):", value="005930")
+        stock_code = st.text_input("종목 번호 6자리:", value="005930")
     with col2:
         st.write("") 
-        run_button = st.button("AI 분석 시작", use_container_width=True)
+        run_button = st.button("영업일 기준 정밀 분석 시작", use_container_width=True)
 
     if run_button:
         try:
-            # [단계 1] 종목 정보 확보 (실패 시 코드번호 사용)
-            try:
-                # KRX 정보 수집 시도
-                stocks = fdr.StockListing('KRX')
-                stock_name = stocks[stocks['Code'] == stock_code]['Name'].values[0]
-            except:
-                stock_name = f"종목({stock_code})"
-            
-            record_log(stock_code, stock_name)
+            status = st.empty()
+            status.info("데이터를 수집하고 분석 중입니다...")
 
-            # [단계 2] ★ 주가 데이터 수집 (네이버 금융 루트 고정) ★
-            # fdr.DataReader는 KRX 차단 시에도 네이버 소스를 통해 데이터를 가져올 수 있습니다.
-            df = fdr.DataReader(stock_code, datetime.now()-timedelta(days=730))
-            
+            # [1] 데이터 수집 (네이버 금융 루트 우선)
+            df = fdr.DataReader(stock_code, KST - timedelta(days=730))
             if df.empty:
-                st.error("데이터를 수집할 수 없습니다. 종목 코드를 다시 확인해 주세요.")
+                st.error("데이터 수집 실패! 코드를 확인하세요.")
                 st.stop()
             
             df = df.rename(columns={'Close': '종가', 'Volume': '거래량'})
+            
+            # 종목명 확보 및 로그 기록
+            try:
+                stocks = fdr.StockListing('KRX')
+                stock_name = stocks[stocks['Code'] == stock_code]['Name'].values[0]
+            except: stock_name = f"종목({stock_code})"
+            record_log(stock_code, stock_name)
 
-            # [단계 3] 구글 트렌드 (오류 격리 방어)
+            # [2] 구글 트렌드 (오류 방어 로직 강화)
             df['구글트렌드'] = 0
             try:
-                pytrends = TrendReq(hl='ko', timeout=(5, 10))
+                pytrends = TrendReq(hl='ko', tz=360)
                 pytrends.build_payload([stock_name], timeframe='today 2-y', geo='KR')
                 trends = pytrends.interest_over_time()
                 if not trends.empty:
                     df['구글트렌드'] = trends[stock_name].reindex(df.index, method='ffill').fillna(0)
             except:
-                st.warning("시장 심리 지표를 불러오지 못해 주가 데이터 위주로 분석합니다.")
+                st.warning("시장 심리 지표를 일시적으로 불러올 수 없어 주가 데이터로 분석합니다.")
 
-            # [단계 4] AI 학습 (Ridge Regression)
-            # 변수: 날짜지수, 요일, 거래량, 변동성, 감성지수
+            # [3] AI 변수 생성 및 Ridge 학습
             df['날짜지수'] = np.arange(len(df))
             df['요일'] = df.index.weekday
             df['변동성'] = (df['High'] - df['Low']) / df['종가']
@@ -97,7 +97,15 @@ if menu == "실전 종목 분석기":
             X_scaled = scaler.fit_transform(df_train[features])
             model = Ridge(alpha=1.0).fit(X_scaled, df_train['target'])
 
-            # [단계 5] ★ 핵심: 7거래일 예측 루프 복구 ★
+            # [4] ★ 요청하신 변수 기여도 막대그래프 ★
+            st.subheader("AI 분석 결과: 2개년 데이터 변수별 기여도")
+            raw_importance = np.abs(model.coef_)
+            total_raw = np.sum(raw_importance)
+            ai_weights = (raw_importance / total_raw) * 100.0
+            weight_data = pd.DataFrame({'변수': features, '비중(%)': list(ai_weights)})
+            st.bar_chart(weight_data.set_index('변수'), color='#00CCFF')
+
+            # [5] 미래 7거래일 예측 로직 (영업일 기준)
             last_price, last_date = df['종가'].iloc[-1], df.index[-1]
             future_prices, future_dates = [], []
             temp_price, last_feat = last_price, df[features].iloc[-1:].copy()
@@ -105,32 +113,32 @@ if menu == "실전 종목 분석기":
             curr_d = last_date
             while len(future_prices) < 7:
                 curr_d += timedelta(days=1)
-                if curr_d.weekday() < 5: # 영업일 기준
+                if curr_d.weekday() < 5: # 월~금 영업일만
                     last_feat['날짜지수'] += 1
                     last_feat['요일'] = curr_d.weekday()
-                    pred_ret = model.predict(scaler.transform(last_feat))[0]
-                    temp_price *= (1 + pred_ret)
+                    pred = model.predict(scaler.transform(last_feat))[0]
+                    temp_price *= (1 + pred)
                     future_prices.append(temp_price); future_dates.append(curr_d)
 
-            # [단계 6] 결과 시각화
+            # [6] 결과 시각화 (최근 1개월 집중)
+            st.subheader(f"📊 {stock_name} 최근 흐름 및 7거래일 예측")
             fig = go.Figure()
-            # 실제 데이터 (최근 30일)
-            fig.add_trace(go.Scatter(x=df.index[-30:], y=df['종가'].iloc[-30:], name="최근 시세", line=dict(color='#00CCFF', width=3)))
-            # 예측 데이터 (빨간색 점선)
+            fig.add_trace(go.Scatter(x=df.index[-30:], y=df['종가'].iloc[-30:], name="실제 시세", line=dict(color='#00CCFF', width=3)))
             fig.add_trace(go.Scatter(x=[last_date]+future_dates, y=[last_price]+future_prices, 
-                                     name="AI 예측(7일)", line=dict(dash='dash', color='red', width=4)))
+                                     name="AI 예측(7일)", line=dict(dash='dash', color='red', width=4), mode='lines+markers'))
             fig.update_layout(template='plotly_dark', height=500)
             st.plotly_chart(fig, use_container_width=True)
-            st.success(f"{stock_name} 7거래일 분석 완료!")
+            status.success("KST 기준 7거래일 분석이 완료되었습니다!")
 
         except Exception as e:
-            st.error(f"분석 도중 오류가 발생했습니다: {e}")
+            st.error(f"분석 중 오류 발생: {e}")
 
 # --- [페이지 2: 관리자 대시보드] ---
 elif menu == "관리자 대시보드":
     st.title("📊 실시간 관리자 모니터링")
     pw = st.text_input("비밀번호", type="password")
     
+    # Secrets의 admin_password와 대조
     if pw == st.secrets.get("admin_password", "0000"):
         st.success("인증 성공")
         if conn:
@@ -139,9 +147,11 @@ elif menu == "관리자 대시보드":
                 st.subheader(f"🔥 인기 종목 TOP 5 (누적 {len(data)}건)")
                 st.bar_chart(data['종목명'].value_counts().head(5), color='#FF4B4B')
                 st.write("---")
-                st.subheader("📝 최근 검색 로그")
+                st.subheader("📝 최근 검색 로그 (KST 기준)")
                 st.dataframe(data.iloc[::-1], use_container_width=True)
             except:
-                st.warning("데이터베이스 연결 대기 중... 시트 공유 설정을 확인하세요.")
+                st.warning("데이터베이스 연결 대기 중... requirements.txt 설정을 확인하세요.")
+        else:
+            st.error("구글 시트 연결 라이브러리가 설치되지 않았습니다.")
     else:
-        st.info("관리자 비밀번호를 입력해 주세요.")
+        st.info("비밀번호를 입력해 주세요.")
